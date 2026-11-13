@@ -450,17 +450,24 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__=="__main__":
     os.chdir(ROOT)
-    print("Dashboard Hidrológico da 3ª DE")
-    print("Abra no navegador: http://localhost:8000")
-    print("As consultas oficiais podem demorar na primeira atualização.")
-    print("Mantenha esta janela aberta. Para encerrar: Ctrl+C.")
+    porta=int(os.environ.get("PORT", "8000"))
+    hospedado=bool(os.environ.get("PORT"))
+    endereco="0.0.0.0" if hospedado else "127.0.0.1"
+    print("Dashboard Hidrológico da 3ª DE", flush=True)
+    print(f"Servidor em {endereco}:{porta}", flush=True)
+    print("As consultas oficiais podem demorar na primeira atualização.", flush=True)
     try:
-        server=ThreadingHTTPServer(("127.0.0.1",8000),Handler)
+        server=ThreadingHTTPServer((endereco,porta),Handler)
     except OSError as e:
-        print("ERRO ao iniciar na porta 8000:",e)
-        input("Pressione Enter para fechar...")
+        print(f"ERRO ao iniciar na porta {porta}: {e}", flush=True)
+        if not hospedado:
+            input("Pressione Enter para fechar...")
         raise SystemExit(1)
-    threading.Timer(1.2,lambda:webbrowser.open("http://localhost:8000")).start()
-    try:server.serve_forever()
-    except KeyboardInterrupt:pass
-    finally:server.server_close()
+    if not hospedado:
+        threading.Timer(1.2,lambda:webbrowser.open(f"http://localhost:{porta}")).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
