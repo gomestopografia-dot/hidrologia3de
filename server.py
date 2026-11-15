@@ -421,58 +421,104 @@ PONTOS_PREVISAO=[
     ("Barra do Fão",-29.170,-52.240),
     ("São Sepé",-30.164,-53.565),
 ]
-PREVISAO_CACHE={"time":0,"data":None}
+PREVISAO_CACHE={"time":0,"data":None,"ultima_valida":None}
 PREVISAO_LOCK=threading.Lock()
+PREVISAO_CACHE_ARQUIVO=ROOT/"previsao_cache.json"
+
+def _ler_previsao_cache():
+    try:
+        dado=json.loads(PREVISAO_CACHE_ARQUIVO.read_text(encoding="utf-8"))
+        if dado.get("disponivel") and dado.get("pontos"):
+            return dado
+    except (OSError,ValueError,TypeError):
+        pass
+    return None
+
+def _salvar_previsao_cache(dado):
+    try:
+        PREVISAO_CACHE_ARQUIVO.write_text(json.dumps(dado,ensure_ascii=False),encoding="utf-8")
+    except OSError:
+        pass  # Filesystem do Render Free não é persistente.
+
 def consultar_previsao():
-    """Verifica o maior valor horário previsto em qualquer localidade, nos próximos 7 dias."""
+    """Uma única consulta Open-Meteo com as 13 coordenadas; tolera horas ausentes."""
     hoje=datetime.now(timezone(timedelta(hours=-3))).date()
     datas=[(hoje+timedelta(days=i)).isoformat() for i in range(7)]
-    pontos=[]; erros=[]
-    for nome,lat,lon in PONTOS_PREVISAO:
-        params=urllib.parse.urlencode({
-            "latitude":lat,"longitude":lon,"hourly":"precipitation",
-            "timezone":"America/Sao_Paulo","forecast_days":7,
-            "precipitation_unit":"mm"})
-        url="https://api.open-meteo.com/v1/forecast?"+params
-        try:
-            j=getjson(url,timeout=15)
-            horario=j.get("hourly") or {}
-            horas=horario.get("time") or []
-            valores=horario.get("precipitation") or []
-            if len(horas)!=len(valores) or not horas:
-                raise ValueError("Série horária incompleta")
-            registros=[]
-            for hora,valor in zip(horas,valores):
-                if not isinstance(hora,str) or hora[:10] not in datas:
-                    continue
-                if isinstance(valor,bool) or not isinstance(valor,(int,float)):
-                    continue
-                if not math.isfinite(valor) or not 0<=valor<=1000:
-                    continue
-                registros.append((hora,float(valor)))
-            if not registros:
-                raise ValueError("Nenhuma hora com previsão válida")
-            hora_max,maior=max(registros,key=lambda x:x[1])
-            pontos.append({"municipio":nome,"maximoHorarioMmH":round(maior,1),
-                           "horaPico":hora_max})
-        except Exception as exc:
-            erros.append({"municipio":nome,"erro":str(exc)[:250]})
+    nomes=[p[0] for p in PONTOS_PREVISAO]
+    params=urllib.parse.urlencode({
+        "latitude":",".join(str(p[1]) for p in PONTOS_PREVISAO),
+        "longitude":",".join(str(p[2]) for p in PONTOS_PREVISAO),
+        "hourly":"precipitation", "timezone":"America/Sao_Paulo",
+        "forecast_days":7, "precipitation_unit":"mm"})
+    url="https://api.open-meteo.com/v1/forecast?"+params
+    pontos=[];erros=[]
+    try:
+        resposta=getjson(url,timeout=35)
+        if isinstance(resposta,dict):
+            resposta=[resposta]
+        if not isinstance(resposta,list) or len(resposta)!=len(nomes):
+            raise ValueError(f"Resposta de múltiplas coordenadas inesperada: {len(resposta) if isinstance(resposta,list) else 'formato inválido'}")
+        for nome,estacao in zip(nomes,resposta):
+            try:
+                if not isinstance(estacao,dict) or estacao.get("error"):
+                    raise ValueError(str(estacao.get("reason","Resposta inválida")) if isinstance(estacao,dict) else "Resposta inválida")
+                horario=estacao.get("hourly") or {}
+                horas=horario.get("time") or []
+                valores=horario.get("precipitation") or []
+                if len(horas)!=len(valores) or not horas:
+                    raise ValueError("Série horária incompleta")
+                registros=[(hora,float(valor)) for hora,valor in zip(horas,valores)
+                    if isinstance(hora,str) and hora[:10] in datas
+                    and isinstance(valor,(int,float)) and not isinstance(valor,bool)
+                    and math.isfinite(valor) and 0<=valor<=1000]
+                if not registros:
+                    raise ValueError("Nenhuma hora com previsão válida")
+                hora_max,maior=max(registros,key=lambda x:x[1])
+                pontos.append({"municipio":nome,"maximoHorarioMmH":round(maior,1),"horaPico":hora_max})
+            except (ValueError,TypeError,AttributeError) as exc:
+                erros.append({"municipio":nome,"erro":str(exc)[:250]})
+    except urllib.error.HTTPError as exc:
+        # Não repetir imediatamente um HTTP 429: aguardar expiração do cache.
+        erros.append({"fonte":"Open-Meteo","erro":f"HTTP {exc.code}: {exc.reason}"})
+    except Exception as exc:
+        erros.append({"fonte":"Open-Meteo","erro":str(exc)[:250]})
     maior=max(pontos,key=lambda p:p["maximoHorarioMmH"]) if pontos else None
     acima=[p for p in pontos if p["maximoHorarioMmH"]>50.0]
-    coberturaCompleta=len(pontos)==len(PONTOS_PREVISAO)
-    # Regra solicitada: na ausência de confirmação acima de 50 mm/h, classificar como pouco provável, mesmo com cobertura parcial.
-    disponivel=True
     return {"disponivel":bool(pontos),"acima50":bool(acima),
-            "maiorIntensidadeMmH":maior["maximoHorarioMmH"] if maior else None,
-            "municipioMaiorIntensidade":maior["municipio"] if maior else None,
-            "horaMaiorIntensidade":maior["horaPico"] if maior else None,
-            "municipiosAcima50":acima,"pontos":pontos,"erros":erros,
-            "pontosRecebidos":len(pontos),"pontosEsperados":len(PONTOS_PREVISAO),
-            "coberturaCompleta":coberturaCompleta,"inicio":datas[0],"fim":datas[-1],
-            "fonte":"Open-Meteo: precipitação horária prevista",
-            "metodologia":"Gatilho quando qualquer município tiver uma hora prevista com precipitação superior a 50,0 mm/h; não é probabilidade operacional",
-            "erro":None,
-            "atualizadoEm":datetime.now(timezone(timedelta(hours=-3))).isoformat()}
+        "maiorIntensidadeMmH":maior["maximoHorarioMmH"] if maior else None,
+        "municipioMaiorIntensidade":maior["municipio"] if maior else None,
+        "horaMaiorIntensidade":maior["horaPico"] if maior else None,
+        "municipiosAcima50":acima,"pontos":pontos,"erros":erros,
+        "pontosRecebidos":len(pontos),"pontosEsperados":len(PONTOS_PREVISAO),
+        "coberturaCompleta":len(pontos)==len(PONTOS_PREVISAO),
+        "inicio":datas[0],"fim":datas[-1],
+        "fonte":"Open-Meteo: precipitação horária prevista",
+        "metodologia":"Gatilho quando qualquer município tiver uma hora prevista com precipitação superior a 50,0 mm/h; não é probabilidade operacional",
+        "erro":None,"atualizadoEm":datetime.now(timezone(timedelta(hours=-3))).isoformat()}
+
+def obter_previsao_cache():
+    hoje=datetime.now(timezone(timedelta(hours=-3))).date().isoformat()
+    anterior=PREVISAO_CACHE["data"]
+    # 60 minutos para previsão válida; 30 minutos em caso de erro, evitando HTTP 429 repetidos.
+    ttl=3600 if anterior and anterior.get("disponivel") else 1800
+    if anterior is None or anterior.get("inicio")!=hoje or time.time()-PREVISAO_CACHE["time"]>=ttl:
+        novo=consultar_previsao()
+        if novo["disponivel"]:
+            PREVISAO_CACHE["ultima_valida"]=novo
+            _salvar_previsao_cache(novo)
+            resultado=novo
+        else:
+            anterior_valido=PREVISAO_CACHE["ultima_valida"] or _ler_previsao_cache()
+            # Apenas previsões do mesmo período; não reaproveitar previsão de outra semana.
+            if anterior_valido and anterior_valido.get("inicio")==hoje:
+                resultado=dict(anterior_valido)
+                resultado["erros"]=novo["erros"]
+                resultado["cacheAnterior"]=True
+                resultado["aviso"]="Fonte indisponível: exibindo a última previsão válida, com horário original."
+            else:
+                resultado=novo
+        PREVISAO_CACHE.update(data=resultado,time=time.time())
+    return PREVISAO_CACHE["data"]
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs):
@@ -480,12 +526,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] == "/api/previsao":
             with PREVISAO_LOCK:
-                # 3 horas de cache, mas falhas são reconsultadas em 15 minutos.
-                anterior=PREVISAO_CACHE["data"]
-                ttl=10800 if anterior and anterior.get("coberturaCompleta") else 900
-                if anterior is None or anterior.get("inicio")!=datetime.now(timezone(timedelta(hours=-3))).date().isoformat() or time.time()-PREVISAO_CACHE["time"]>=ttl:
-                    PREVISAO_CACHE.update(data=consultar_previsao(),time=time.time())
-                data=PREVISAO_CACHE["data"]
+                data=obter_previsao_cache()
             body=json.dumps(data,ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type","application/json; charset=utf-8")
