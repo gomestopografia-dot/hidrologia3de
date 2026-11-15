@@ -34,6 +34,7 @@ const grupos=[
 // Códigos de estação informados pelo usuário; associação por código tem prioridade.
 const codigosEstacoes={
  "São Borja":"75780000",
+ "Itaqui":"75900000",
  "Rosário do Sul":"76310000",
  "Rio Pardo":"85900000",
 
@@ -106,10 +107,10 @@ function tendenciaEmCentimetros(descricao){
  });
 }
 function trend(e){
- if(!e)return "Sem dados para calcular a tendência";
+ if(!e)return `<span class="muted" title="Estação sem leitura confirmada">—</span>`;
  const descricao=String(e.taxaMudanca||"");
  const n=e.taxaMudancaValor==null?NaN:Number(e.taxaMudancaValor);
- if(!Number.isFinite(n))return esc(tendenciaEmCentimetros(descricao)||"Sem medições suficientes para calcular a tendência horária");
+ if(!Number.isFinite(n))return `<span class="muted" title="Histórico insuficiente para determinar subida ou descida com segurança">—</span>`;
  const classe=n<0?"down":n>0?"up":"stable";
  const seta=n<0?"↓":n>0?"↑":"→";
  return `<span class="trend ${classe}"><span class="trend-arrow">${seta}</span><span>${esc(tendenciaEmCentimetros(descricao)||"Estável na última hora")}</span></span>`;
@@ -160,6 +161,17 @@ async function consultarSaoBorjaIndependente(){
   const pre=document.getElementById('errors');if(pre)pre.textContent='SACE São Borja: '+err.message+'\n'+pre.textContent;
  }
 }
+async function consultarItaquiIndependente(){
+ try {
+  const r=await fetch('/api/itaqui?ts='+Date.now(),{cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const d=await r.json();window.saceItaqui=d;
+  const pre=document.getElementById('errors');
+  if(pre)pre.textContent='SACE Itaqui (consulta independente):\n'+JSON.stringify(d.diagnostico,null,2)+'\n\n'+pre.textContent;
+  const caixa=[...document.querySelectorAll('#left article.river')].find(el=>el.querySelector('a')?.textContent.trim()==='Itaqui');
+  if(caixa)caixa.outerHTML=card('Itaqui','Rio Uruguai',d.estacao);
+ } catch(err){console.warn('SACE Itaqui:',err.message)}
+}
 async function atualizar(){
  const s=document.getElementById("status");s.textContent="Consultando ClimaRS... Na primeira consulta, aguarde até alguns minutos.";
  try{
@@ -176,6 +188,7 @@ async function atualizar(){
  }}}
  document.getElementById(lado).innerHTML=html}
  document.getElementById("total").textContent=selecionadas+" leituras vinculadas";
+ if(window.saceItaqui){const caixa=[...document.querySelectorAll('#left article.river')].find(el=>el.querySelector('a')?.textContent.trim()==='Itaqui');if(caixa)caixa.outerHTML=card('Itaqui','Rio Uruguai',window.saceItaqui.estacao)}
  if(window.saceSaoBorja){const caixa=document.querySelector("#left article.river");if(caixa)caixa.outerHTML=card("São Borja","Rio Uruguai",window.saceSaoBorja.estacao)}
  s.textContent="Consulta: "+(d.consultadoEm?new Date(d.consultadoEm).toLocaleString("pt-BR"):"—")+" | "+estacoes.length+" estações retornadas | "+selecionadas+" vinculadas aos quadros"+(d.erros?.length?" | "+d.erros.length+" consultas com erro":"");
  document.getElementById("errors").textContent=
@@ -186,6 +199,7 @@ async function atualizar(){
  }catch(e){s.textContent="Falha ao carregar: "+e.message+". Verifique se INICIAR está aberto e a conexão à internet."}
 }
 consultarSaoBorjaIndependente();setInterval(consultarSaoBorjaIndependente,300000);
+consultarItaquiIndependente();setInterval(consultarItaquiIndependente,300000);
 atualizar();setInterval(atualizar,300000);
 </script><script>(function(){function atualizarPeriodo(){const d=new Date();const fim=new Date(d.getFullYear(),d.getMonth(),d.getDate()+6);const fmt=(v)=>String(v).padStart(2,"0");const meses=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];let periodo;if(d.getMonth()===fim.getMonth()&&d.getFullYear()===fim.getFullYear()){periodo=fmt(d.getDate())+" a "+fmt(fim.getDate())+" de "+meses[d.getMonth()]}else{periodo=fmt(d.getDate())+" de "+meses[d.getMonth()]+" a "+fmt(fim.getDate())+" de "+meses[fim.getMonth()]}document.getElementById("periodo-chuva").textContent=periodo;}atualizarPeriodo();})();</script><script>
 async function atualizarPrevisao(){

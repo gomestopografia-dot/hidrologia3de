@@ -129,6 +129,21 @@ def montar_estacao_sace(registros,fonte, *, codigo="75780000", nome="Passo São 
                 tendencia=f'Desceu {abs(delta):g} cm {periodo}'.replace('.',',')
             else:
                 tendencia=f'Estável {periodo}'
+    if tendencia is None:
+        # Fallback: qualquer par de medições reais recentes da MESMA estação.
+        # Não denominar uma diferença de várias horas como variação horária.
+        candidatos=[(instante-d,v) for d,v in registros[:-1]
+                    if timedelta(minutes=20) <= instante-d <= timedelta(hours=48)]
+        if candidatos:
+            intervalo,anterior=min(candidatos,key=lambda x:x[0])
+            delta=round(cm-anterior,1)
+            horas_intervalo=intervalo.total_seconds()/3600
+            periodo=(f'em {horas_intervalo:.1f} h' if horas_intervalo < 2
+                     else f'em aproximadamente {horas_intervalo:.0f} horas').replace('.',',')
+            if delta>0:tendencia=f'Subiu {abs(delta):g} cm {periodo}'
+            elif delta<0:tendencia=f'Desceu {abs(delta):g} cm {periodo}'
+            else:tendencia=f'Estável {periodo}'
+            tendencia=tendencia.replace('.',',')
     return {'codigoEstacao':codigo,'nomeEstacao':nome,'municipio':municipio,
       'rio':rio,'nivelCm':cm,'nivelMetros':cm/100,
       'dataHoraMedicao':instante.strftime('%d/%m/%Y %H:%M:%S'),
@@ -199,6 +214,37 @@ def consultar_sace_rio_pardo():
         diag['erro']=str(exc)[:250]
         diag['observacao']='Não foi possível consultar o SACE; não usar valores inventados ou de outras estações.'
         return None,diag
+
+# Itaqui — estação oficial ANA 75900000, exportação SACE Uruguai (ID 32).
+ITAQUI_SACE_CSV="https://sace.sgb.gov.br/niveis/api/dados/uruguai_32_cota.csv"
+LOCK_ITAQUI=threading.Lock()
+CACHE_ITAQUI={"time":0,"data":None}
+
+def consultar_sace_itaqui():
+    diag={'fonte':'SACE/SGB','estacao':'Itaqui','codigoANA':'75900000',
+          'idExportacaoCSV':'uruguai_32','urlConfigurada':ITAQUI_SACE_CSV,
+          'modo':'consulta automática ao CSV a cada 5 minutos','automatico':False}
+    try:
+        raw,url,content_type=fetch_sace(ITAQUI_SACE_CSV,'text/csv,*/*')
+        registros=parse_sace_csv(raw)
+        est=montar_estacao_sace(registros,'SACE/SGB (automático)',
+            codigo='75900000',nome='Itaqui',municipio='Itaqui',
+            rio='RIO URUGUAI',inundacao_cm=830,latitude=-29.1175,longitude=-56.5544)
+        diag.update({'automatico':True,'urlCSV':url,'registrosValidos':len(registros),
+                     'ultimaMedicao':est['dataHoraMedicao'],'nivelCm':est['nivelCm'],
+                     'horasDesdeMedicao':est['horasDesdeMedicao'],'dadoAntigo':est['dadoAntigo']})
+        return est,diag
+    except Exception as exc:
+        diag['erro']=str(exc)[:250]
+        diag['observacao']='Sem leitura válida do CSV SACE de Itaqui; nenhuma medição foi inventada.'
+        return None,diag
+
+def obter_itaqui_cache():
+    with LOCK_ITAQUI:
+        if CACHE_ITAQUI['data'] is None or time.time()-CACHE_ITAQUI['time']>=300:
+            est,diag=consultar_sace_itaqui()
+            CACHE_ITAQUI.update(time=time.time(),data={'estacao':est,'diagnostico':diag})
+        return CACHE_ITAQUI['data']
 
 # Histórico local da estação de referência Estrela/Lajeado.
 # Calcula a variação real em aproximadamente uma hora, sem assumir que
@@ -291,6 +337,14 @@ def consultar():
         dados['saceDiagnostico']={'automatico':False,'fonte':'SACE/SGB',
                                   'estacao':'Passo São Borja','erro':str(e)}
         dados['erros'].append('São Borja: falha na consulta SACE; sem leitura.')
+    # Itaqui: consulta exclusiva ao SACE 75900000; não substituir por estação vizinha.
+    dados['estacoes']=[e for e in dados['estacoes'] if normal(e.get('municipio'))!='itaqui' and str(e.get('codigoEstacao'))!='75900000']
+    resultado_itaqui=obter_itaqui_cache()
+    dados['saceItaquiDiagnostico']=resultado_itaqui['diagnostico']
+    if resultado_itaqui['estacao']:
+        dados['estacoes'].append(resultado_itaqui['estacao'])
+    else:
+        dados['erros'].append('Itaqui: SACE indisponível; sem medição confirmada.')
     # Rio Pardo: prioridade ao CSV direto do SACE/SGB; nenhuma estação vizinha substitui a 85900000.
     est_rp,diag_rp=consultar_sace_rio_pardo()
     dados['saceRioPardoDiagnostico']=diag_rp
@@ -435,6 +489,15 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length",str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if self.path.split("?")[0] == "/api/itaqui":
+            data=obter_itaqui_cache()
+            body=json.dumps(data,ensure_ascii=False).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Length',str(len(body)))
+            self.end_headers();self.wfile.write(body)
             return
         if self.path.split("?")[0] == "/api/sao-borja":
             # Consulta independente: não aguarda as dezenas de requisições ClimaRS.
