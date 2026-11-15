@@ -212,11 +212,11 @@ async function atualizarPrevisao(){
   const d=await r.json();
   const mm=d.maiorIntensidadeMmH===null||d.maiorIntensidadeMmH===undefined?NaN:Number(d.maiorIntensidadeMmH);
   chuva.textContent=Number.isFinite(mm)?mm.toLocaleString("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1})+" mm/h":"indisponível";
-  document.getElementById("municipio-chuva").textContent=" em "+(d.municipioMaiorIntensidade||"localidade não identificada");
-  const pico=d.horaMaiorIntensidade?" (pico: "+d.horaMaiorIntensidade.replace("T"," ")+")":"";
+  document.getElementById("municipio-chuva").textContent=Number.isFinite(mm)&&d.municipioMaiorIntensidade?" em "+d.municipioMaiorIntensidade:"";
+  const pico=Number.isFinite(mm)&&d.horaMaiorIntensidade?" (pico: "+d.horaMaiorIntensidade.replace("T"," ")+")":"";
   document.getElementById("municipio-chuva").textContent+=pico;
   indicativo.textContent=(d.acima50?"É provável":"É pouco provável")+" a solicitação para o emprego de OM da 3ª DE em sua Área de Segurança Integrada (ASI).";
-  atualizacao.textContent=(d.coberturaCompleta?"":" Cobertura parcial: "+d.pontosRecebidos+"/"+d.pontosEsperados+" localidades.")+(d.atualizadoEm?" Consulta: "+new Date(d.atualizadoEm).toLocaleString("pt-BR"):"");
+  atualizacao.textContent=(!Number.isFinite(mm)?" Nenhuma previsão válida foi recebida. Verifique os erros em /api/previsao.":"")+(d.coberturaCompleta?"":" Cobertura parcial: "+d.pontosRecebidos+"/"+d.pontosEsperados+" localidades.")+(d.atualizadoEm?" Consulta: "+new Date(d.atualizadoEm).toLocaleString("pt-BR"):"");
  }catch(e){
   chuva.textContent="indisponível";
   document.getElementById("municipio-chuva").textContent="";

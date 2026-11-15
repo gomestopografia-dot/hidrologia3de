@@ -1,3 +1,4 @@
+import math
 import ssl, csv, json, os, threading, time, urllib.request, urllib.error, urllib.parse, unicodedata, webbrowser, xml.etree.ElementTree as ET, re
 from html.parser import HTMLParser
 from html import unescape
@@ -442,12 +443,15 @@ def consultar_previsao():
                 raise ValueError("Série horária incompleta")
             registros=[]
             for hora,valor in zip(horas,valores):
-                if not isinstance(hora,str) or hora[:10] not in datas:continue
-                if not isinstance(valor,(int,float)) or not 0<=valor<=1000:
-                    raise ValueError("Precipitação horária ausente ou inválida")
+                if not isinstance(hora,str) or hora[:10] not in datas:
+                    continue
+                if isinstance(valor,bool) or not isinstance(valor,(int,float)):
+                    continue
+                if not math.isfinite(valor) or not 0<=valor<=1000:
+                    continue
                 registros.append((hora,float(valor)))
-            if len(registros)!=7*24 or set(h[:10] for h,v in registros)!=set(datas):
-                raise ValueError("Previsão não cobre as 168 horas dos sete dias")
+            if not registros:
+                raise ValueError("Nenhuma hora com previsão válida")
             hora_max,maior=max(registros,key=lambda x:x[1])
             pontos.append({"municipio":nome,"maximoHorarioMmH":round(maior,1),
                            "horaPico":hora_max})
@@ -458,7 +462,7 @@ def consultar_previsao():
     coberturaCompleta=len(pontos)==len(PONTOS_PREVISAO)
     # Regra solicitada: na ausência de confirmação acima de 50 mm/h, classificar como pouco provável, mesmo com cobertura parcial.
     disponivel=True
-    return {"disponivel":disponivel,"acima50":bool(acima),
+    return {"disponivel":bool(pontos),"acima50":bool(acima),
             "maiorIntensidadeMmH":maior["maximoHorarioMmH"] if maior else None,
             "municipioMaiorIntensidade":maior["municipio"] if maior else None,
             "horaMaiorIntensidade":maior["horaPico"] if maior else None,
@@ -478,7 +482,7 @@ class Handler(SimpleHTTPRequestHandler):
             with PREVISAO_LOCK:
                 # 3 horas de cache, mas falhas são reconsultadas em 15 minutos.
                 anterior=PREVISAO_CACHE["data"]
-                ttl=10800 if anterior and anterior.get("disponivel") else 900
+                ttl=10800 if anterior and anterior.get("coberturaCompleta") else 900
                 if anterior is None or anterior.get("inicio")!=datetime.now(timezone(timedelta(hours=-3))).date().isoformat() or time.time()-PREVISAO_CACHE["time"]>=ttl:
                     PREVISAO_CACHE.update(data=consultar_previsao(),time=time.time())
                 data=PREVISAO_CACHE["data"]
