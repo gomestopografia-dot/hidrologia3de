@@ -349,55 +349,71 @@ def ana_por_codigo(nome,codigo):
       "fonte":"ANA legado","horasDesdeMedicao":round(horas,1)},diag
 
 
-# Previsão pluviométrica: modelo ECMWF IFS (serviço Open-Meteo).
-# Média espacial do acumulado de sete dias em seis municípios de referência
-# distribuídos pela área monitorada, NÃO uma previsão oficial da 3ª DE.
+# Previsão de 7 dias: todos os 12 municípios representados nos cartões do painel.
+# Barra do Fão é uma localidade, representada por coordenadas da região da estação.
 PONTOS_PREVISAO=[
     ("São Borja",-28.660,-56.004),
+    ("Itaqui",-29.125,-56.553),
     ("Uruguaiana",-29.760,-57.087),
-    ("Santa Maria",-29.686,-53.807),
+    ("Manoel Viana",-29.587,-55.483),
+    ("Alegrete",-29.783,-55.792),
+    ("Quaraí",-30.385,-56.451),
+    ("Rosário do Sul",-30.258,-54.914),
     ("Cachoeira do Sul",-30.039,-52.894),
-    ("Rio Pardo",-29.990,-52.378),
     ("Lajeado",-29.467,-51.961),
+    ("Rio Pardo",-29.990,-52.378),
+    ("Dona Francisca",-29.619,-53.362),
+    ("Barra do Fão",-29.170,-52.240),
+    ("São Sepé",-30.164,-53.565),
 ]
 PREVISAO_CACHE={"time":0,"data":None}
 PREVISAO_LOCK=threading.Lock()
 def consultar_previsao():
-    # Todos os dias são calculados na timezone local para evitar datas UTC.
+    """Verifica o maior valor horário previsto em qualquer localidade, nos próximos 7 dias."""
     hoje=datetime.now(timezone(timedelta(hours=-3))).date()
     datas=[(hoje+timedelta(days=i)).isoformat() for i in range(7)]
-    pontos=[]
-    erros=[]
+    pontos=[]; erros=[]
     for nome,lat,lon in PONTOS_PREVISAO:
         params=urllib.parse.urlencode({
-            "latitude":lat,"longitude":lon,"daily":"precipitation_sum",
-            "models":"ecmwf_ifs","timezone":"America/Sao_Paulo",
-            "forecast_days":7,"precipitation_unit":"mm"
-        })
+            "latitude":lat,"longitude":lon,"hourly":"precipitation",
+            "timezone":"America/Sao_Paulo","forecast_days":7,
+            "precipitation_unit":"mm"})
         url="https://api.open-meteo.com/v1/forecast?"+params
         try:
-            j=getjson(url,timeout=12)
-            diario=j.get("daily") or {}
-            dias=diario.get("time") or []
-            valores=diario.get("precipitation_sum") or []
-            mapa={d:v for d,v in zip(dias,valores)}
-            if not all(d in mapa and isinstance(mapa[d],(int,float))
-                       and 0<=mapa[d]<=1000 for d in datas):
-                raise ValueError("Previsão incompleta ou datas incorretas")
-            pontos.append({"municipio":nome,"acumulado7dMm":round(sum(mapa[d] for d in datas),1)})
+            j=getjson(url,timeout=15)
+            horario=j.get("hourly") or {}
+            horas=horario.get("time") or []
+            valores=horario.get("precipitation") or []
+            if len(horas)!=len(valores) or not horas:
+                raise ValueError("Série horária incompleta")
+            registros=[]
+            for hora,valor in zip(horas,valores):
+                if not isinstance(hora,str) or hora[:10] not in datas:continue
+                if not isinstance(valor,(int,float)) or not 0<=valor<=1000:
+                    raise ValueError("Precipitação horária ausente ou inválida")
+                registros.append((hora,float(valor)))
+            if len(registros)!=7*24 or set(h[:10] for h,v in registros)!=set(datas):
+                raise ValueError("Previsão não cobre as 168 horas dos sete dias")
+            hora_max,maior=max(registros,key=lambda x:x[1])
+            pontos.append({"municipio":nome,"maximoHorarioMmH":round(maior,1),
+                           "horaPico":hora_max})
         except Exception as exc:
-            erros.append({"municipio":nome,"erro":str(exc)})
-    # Não apresentar uma média enganosa com cobertura incompleta.
-    if len(pontos)!=len(PONTOS_PREVISAO):
-        return {"disponivel":False,"erro":"Cobertura incompleta da previsão; sem classificação automática",
-                "pontosRecebidos":len(pontos),"pontosEsperados":len(PONTOS_PREVISAO),
-                "erros":erros,"inicio":datas[0],"fim":datas[-1],
-                "fonte":"ECMWF IFS via Open-Meteo"}
-    media=round(sum(p["acumulado7dMm"] for p in pontos)/len(pontos),1)
-    return {"disponivel":True,"mediaMm":media,"acima50":media>50,
-            "inicio":datas[0],"fim":datas[-1],"pontos":pontos,
-            "fonte":"Modelo ECMWF IFS via Open-Meteo",
-            "metodologia":"Média de seis acumulados municipais de 7 dias (não é probabilidade operacional)",
+            erros.append({"municipio":nome,"erro":str(exc)[:250]})
+    maior=max(pontos,key=lambda p:p["maximoHorarioMmH"]) if pontos else None
+    acima=[p for p in pontos if p["maximoHorarioMmH"]>50.0]
+    coberturaCompleta=len(pontos)==len(PONTOS_PREVISAO)
+    # Regra solicitada: na ausência de confirmação acima de 50 mm/h, classificar como pouco provável, mesmo com cobertura parcial.
+    disponivel=True
+    return {"disponivel":disponivel,"acima50":bool(acima),
+            "maiorIntensidadeMmH":maior["maximoHorarioMmH"] if maior else None,
+            "municipioMaiorIntensidade":maior["municipio"] if maior else None,
+            "horaMaiorIntensidade":maior["horaPico"] if maior else None,
+            "municipiosAcima50":acima,"pontos":pontos,"erros":erros,
+            "pontosRecebidos":len(pontos),"pontosEsperados":len(PONTOS_PREVISAO),
+            "coberturaCompleta":coberturaCompleta,"inicio":datas[0],"fim":datas[-1],
+            "fonte":"Open-Meteo: precipitação horária prevista",
+            "metodologia":"Gatilho quando qualquer município tiver uma hora prevista com precipitação superior a 50,0 mm/h; não é probabilidade operacional",
+            "erro":None,
             "atualizadoEm":datetime.now(timezone(timedelta(hours=-3))).isoformat()}
 
 class Handler(SimpleHTTPRequestHandler):
